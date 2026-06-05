@@ -1,23 +1,27 @@
-﻿using DiscountRules.Standard.Models;
+using DiscountRules.Standard.Models;
 using Grand.Business.Core.Interfaces.Catalog.Discounts;
+using Grand.Business.Core.Interfaces.Common.Directory;
 using Grand.Business.Core.Interfaces.Common.Security;
 using Grand.Domain.Permissions;
 using Grand.Domain.Discounts;
-using Grand.Web.Common.Controllers;
 using Microsoft.AspNetCore.Mvc;
-using System.Globalization;
+using Microsoft.AspNetCore.Mvc.Rendering;
 
-namespace DiscountRules.Standard.Areas.Admin.Controllers;
+namespace DiscountRules.Standard.Controllers;
 
-public class ShoppingCartAmountController : BaseAdminPluginController
+public class DiscountRulesCustomerGroupsController : BaseDiscountRulePluginController
 {
     private readonly IDiscountService _discountService;
+    private readonly IGroupService _groupService;
     private readonly IPermissionService _permissionService;
 
-    public ShoppingCartAmountController(IDiscountService discountService,
+    public DiscountRulesCustomerGroupsController(
+        IDiscountService discountService,
+        IGroupService groupService,
         IPermissionService permissionService)
     {
         _discountService = discountService;
+        _groupService = groupService;
         _permissionService = permissionService;
     }
 
@@ -30,32 +34,38 @@ public class ShoppingCartAmountController : BaseAdminPluginController
         if (discount == null)
             throw new ArgumentException("Discount could not be loaded");
 
-        double spentAmountRequirement = 0;
+        DiscountRule discountRequirement = null;
         if (!string.IsNullOrEmpty(discountRequirementId))
         {
-            var discountRequirement = discount.DiscountRules.FirstOrDefault(dr => dr.Id == discountRequirementId);
+            discountRequirement = discount.DiscountRules.FirstOrDefault(dr => dr.Id == discountRequirementId);
             if (discountRequirement == null)
                 return Content("Failed to load requirement.");
-
-            spentAmountRequirement = Convert.ToDouble(discountRequirement.Metadata);
         }
 
-        var model = new RequirementShoppingCartModel {
+        var model = new RequirementCustomerGroupsModel {
             RequirementId = !string.IsNullOrEmpty(discountRequirementId) ? discountRequirementId : "",
             DiscountId = discountId,
-            SpentAmount = spentAmountRequirement
+            CustomerGroupId = discountRequirement?.Metadata
         };
+
+        //customer groups
+        model.AvailableCustomerGroups.Add(new SelectListItem { Text = "Select customer group", Value = "" });
+        foreach (var cr in await _groupService.GetAllCustomerGroups(showHidden: true))
+            model.AvailableCustomerGroups.Add(new SelectListItem {
+                Text = cr.Name, Value = cr.Id,
+                Selected = discountRequirement != null && cr.Id == discountRequirement.Metadata
+            });
 
         //add a prefix
         ViewData.TemplateInfo.HtmlFieldPrefix =
-            $"DiscountRulesShoppingCart{(!string.IsNullOrEmpty(discountRequirementId) ? discountRequirementId : "")}";
+            $"DiscountRulesCustomerGroups{(!string.IsNullOrEmpty(discountRequirementId) ? discountRequirementId : "")}";
 
         return View(model);
     }
 
-
     [HttpPost]
-    public async Task<IActionResult> Configure(string discountId, string discountRequirementId, double spentAmount)
+    [AutoValidateAntiforgeryToken]
+    public async Task<IActionResult> Configure(string discountId, string discountRequirementId, string customerGroupId)
     {
         if (!await _permissionService.Authorize(StandardPermission.ManageDiscounts))
             return Content("Access denied");
@@ -71,15 +81,15 @@ public class ShoppingCartAmountController : BaseAdminPluginController
         if (discountRequirement != null)
         {
             //update existing rule
-            discountRequirement.Metadata = spentAmount.ToString(CultureInfo.InvariantCulture);
+            discountRequirement.Metadata = customerGroupId;
             await _discountService.UpdateDiscount(discount);
         }
         else
         {
             //save new rule
             discountRequirement = new DiscountRule {
-                DiscountRequirementRuleSystemName = "DiscountRequirement.ShoppingCart",
-                Metadata = spentAmount.ToString(CultureInfo.InvariantCulture)
+                DiscountRequirementRuleSystemName = "DiscountRules.Standard.MustBeAssignedToCustomerGroup",
+                Metadata = customerGroupId
             };
             discount.DiscountRules.Add(discountRequirement);
             await _discountService.UpdateDiscount(discount);
